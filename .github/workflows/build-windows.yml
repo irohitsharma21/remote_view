@@ -1,0 +1,80 @@
+name: Build Windows agent (.exe)
+
+# Two ways to run:
+#  - Manually (Actions tab -> this workflow -> "Run workflow"): fill in your
+#    Render URL, secret and code to BAKE them in, so the .exe just double-clicks.
+#  - On push to main: builds a plain .exe with the defaults in agent/agent.py.
+on:
+  workflow_dispatch:
+    inputs:
+      server:
+        description: 'Relay URL (e.g. wss://your-app.onrender.com)'
+        required: false
+        default: ''
+      secret:
+        description: 'Agent secret (must match REMOTE_AGENT_SECRET on the server)'
+        required: false
+        default: ''
+      code:
+        description: 'Fixed access code (6 digits). Leave blank for random each run.'
+        required: false
+        default: ''
+  push:
+    branches: [ main ]
+    paths:
+      - 'agent/**'
+      - '.github/workflows/build-windows.yml'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r agent/requirements-agent.txt pyinstaller
+
+      - name: Bake in server/secret/code (manual runs only)
+        if: ${{ github.event.inputs.server != '' }}
+        shell: bash
+        env:
+          IN_SERVER: ${{ github.event.inputs.server }}
+          IN_SECRET: ${{ github.event.inputs.secret }}
+          IN_CODE: ${{ github.event.inputs.code }}
+        run: |
+          python - <<'PY'
+          import os, re
+          p = "agent/agent.py"
+          s = open(p, encoding="utf-8").read()
+          def setval(name, val):
+              global s
+              s = re.sub(rf'{name} = ".*?"', f'{name} = "{val}"', s, count=1)
+          setval("SERVER_DEFAULT", os.environ["IN_SERVER"])
+          if os.environ.get("IN_SECRET"):
+              setval("SECRET_DEFAULT", os.environ["IN_SECRET"])
+          if os.environ.get("IN_CODE"):
+              setval("CODE_DEFAULT", os.environ["IN_CODE"])
+          open(p, "w", encoding="utf-8").write(s)
+          print("Baked server/secret/code into agent.py")
+          PY
+
+      - name: Build .exe
+        shell: bash
+        run: |
+          pyinstaller --onefile --noconsole --name remote_agent \
+            --collect-submodules pynput \
+            agent/agent.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: remote_agent-windows
+          path: dist/remote_agent.exe
+          if-no-files-found: error
