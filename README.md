@@ -77,6 +77,24 @@ Both: System Settings → Privacy & Security → grant your terminal / the agent
    For production use a real cert (Caddy or nginx + Let's Encrypt in front).
 3. Point agents at it: `python agent/agent.py --server wss://your-host:8443 --secret ...`
 
+## Deploy the server for free (so agents reach it over the internet)
+
+The relay needs a **persistent process with WebSockets** — so serverless hosts
+(Vercel, Netlify, Lambda) won't work. Use a host that runs a long-lived process:
+**Render**, **Fly.io**, **Railway**, or **Koyeb**.
+
+### Render (easiest, via `render.yaml`)
+1. On <https://render.com>: **New → Blueprint** and pick this GitHub repo.
+2. It reads [`render.yaml`](render.yaml); set `REMOTE_ADMIN_PASSWORD` and
+   `REMOTE_AGENT_SECRET` when prompted.
+3. Deploy → you get `https://<name>.onrender.com`.
+   - Dashboard: open that URL in your browser.
+   - Agent: `python agent.py --server wss://<name>.onrender.com --secret ... --code ...`
+
+No tunnel needed — the host URL is public and already HTTPS (so the agent uses
+`wss://`). Free tiers sleep when idle and have bandwidth caps; continuous screen
+streaming uses a lot of egress, so watch your usage for anything beyond testing.
+
 ## Package the agent to a single executable
 Edit the bake-in defaults at the top of [agent/agent.py](agent/agent.py) first:
 ```python
