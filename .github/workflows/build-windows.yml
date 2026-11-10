@@ -1,29 +1,35 @@
 name: Build Windows agent (.exe)
 
-# Two ways to run:
-#  - Manually (Actions tab -> this workflow -> "Run workflow"): fill in your
-#    Render URL, secret and code to BAKE them in, so the .exe just double-clicks.
-#  - On push to main: builds a plain .exe with the defaults in agent/agent.py.
+# Builds a ready-to-run Windows agent with your relay URL / secret / code baked in,
+# then publishes it to the "latest" GitHub Release so there is a permanent link:
+#
+#   https://github.com/irohitsharma21/remote_view/releases/latest/download/remote_agent.exe
+#
+# Runs automatically on push to main, or manually (Actions -> Run workflow) if you
+# want to override the server/secret/code for a one-off build.
 on:
   workflow_dispatch:
     inputs:
       server:
-        description: 'Relay URL (e.g. wss://your-app.onrender.com)'
+        description: 'Relay URL (wss://...)'
         required: false
-        default: ''
+        default: 'wss://remote-view-relay.onrender.com'
       secret:
-        description: 'Agent secret (must match REMOTE_AGENT_SECRET on the server)'
+        description: 'Agent secret (blank = use the AGENT_SECRET repo secret)'
         required: false
         default: ''
       code:
-        description: 'Fixed access code (6 digits). Leave blank for random each run.'
+        description: 'Fixed access code (6 digits), blank = random each run'
         required: false
-        default: ''
+        default: '123456'
   push:
     branches: [ main ]
     paths:
       - 'agent/**'
       - '.github/workflows/build-windows.yml'
+
+permissions:
+  contents: write   # needed to publish the Release
 
 jobs:
   build:
@@ -41,13 +47,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r agent/requirements-agent.txt pyinstaller
 
-      - name: Bake in server/secret/code (manual runs only)
-        if: ${{ github.event.inputs.server != '' }}
+      - name: Bake in server / secret / code
         shell: bash
         env:
-          IN_SERVER: ${{ github.event.inputs.server }}
-          IN_SECRET: ${{ github.event.inputs.secret }}
-          IN_CODE: ${{ github.event.inputs.code }}
+          # Manual runs use the inputs; push builds fall back to these defaults.
+          IN_SERVER: ${{ github.event.inputs.server || 'wss://remote-view-relay.onrender.com' }}
+          IN_SECRET: ${{ github.event.inputs.secret || secrets.AGENT_SECRET }}
+          IN_CODE: ${{ github.event.inputs.code || '123456' }}
         run: |
           python - <<'PY'
           import os, re
@@ -57,12 +63,10 @@ jobs:
               global s
               s = re.sub(rf'{name} = ".*?"', f'{name} = "{val}"', s, count=1)
           setval("SERVER_DEFAULT", os.environ["IN_SERVER"])
-          if os.environ.get("IN_SECRET"):
-              setval("SECRET_DEFAULT", os.environ["IN_SECRET"])
-          if os.environ.get("IN_CODE"):
-              setval("CODE_DEFAULT", os.environ["IN_CODE"])
+          setval("SECRET_DEFAULT", os.environ["IN_SECRET"])
+          setval("CODE_DEFAULT", os.environ["IN_CODE"])
           open(p, "w", encoding="utf-8").write(s)
-          print("Baked server/secret/code into agent.py")
+          print(f"Baked: {os.environ['IN_SERVER']} / {os.environ['IN_SECRET']} / {os.environ['IN_CODE']}")
           PY
 
       - name: Build .exe
@@ -72,9 +76,20 @@ jobs:
             --collect-submodules pynput \
             agent/agent.py
 
-      - name: Upload artifact
+      - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: remote_agent-windows
           path: dist/remote_agent.exe
           if-no-files-found: error
+
+      - name: Publish to "latest" Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Windows agent (latest build)
+          body: |
+            Ready-to-run Windows agent. Double-click to connect to the relay.
+            Built from commit ${{ github.sha }}.
+          files: dist/remote_agent.exe
+          make_latest: true
