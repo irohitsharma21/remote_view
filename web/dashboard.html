@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>remote_control — dashboard</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; font-family: system-ui, -apple-system, sans-serif;
+    background: #0e0e12; color: #e8e8ea;
+  }
+  header {
+    display: flex; align-items: center; gap: 12px;
+    padding: 12px 18px; background: #16161c; border-bottom: 1px solid #26262e;
+  }
+  header h1 { font-size: 16px; margin: 0; }
+  main { max-width: 760px; margin: 40px auto; padding: 0 18px; }
+  .card { background: #16161c; border: 1px solid #26262e; border-radius: 10px; padding: 22px; }
+  input, button {
+    font: inherit; padding: 9px 12px; border-radius: 8px; border: 1px solid #333;
+    background: #0e0e12; color: #e8e8ea;
+  }
+  button { background: #3355ff; border-color: #3355ff; cursor: pointer; }
+  button.secondary { background: transparent; border-color: #333; }
+  button:hover { filter: brightness(1.1); }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid #22222a; font-size: 14px; }
+  th { color: #8a8a94; font-weight: 600; }
+  .muted { color: #8a8a94; font-size: 13px; }
+  .empty { padding: 24px; text-align: center; color: #8a8a94; }
+  .row-actions { text-align: right; }
+  #err { color: #ff6b6b; font-size: 13px; min-height: 18px; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>remote_control</h1>
+    <span class="muted">dashboard</span>
+    <span style="margin-left:auto"></span>
+    <button id="logout" class="secondary" style="display:none">log out</button>
+  </header>
+
+  <main>
+    <!-- Login -->
+    <div id="loginView" class="card" style="display:none">
+      <h2 style="margin-top:0">Admin login</h2>
+      <p class="muted">Enter the admin password printed by the server at startup.</p>
+      <div style="display:flex; gap:8px">
+        <input id="password" type="password" placeholder="admin password" style="flex:1" />
+        <button id="loginBtn">Log in</button>
+      </div>
+      <p id="err"></p>
+    </div>
+
+    <!-- Agents -->
+    <div id="agentsView" style="display:none">
+      <div class="card">
+        <h2 style="margin-top:0">Connected machines</h2>
+        <p class="muted">Pick a machine to view. You'll need its access code
+          (shown on that machine's banner).</p>
+        <table>
+          <thead>
+            <tr><th>Agent ID</th><th>Viewers</th><th>Uptime</th><th></th></tr>
+          </thead>
+          <tbody id="agentRows"></tbody>
+        </table>
+        <div id="emptyMsg" class="empty">No agents connected yet.</div>
+      </div>
+    </div>
+  </main>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  let token = localStorage.getItem("rc_token") || "";
+
+  function show(view) {
+    $("loginView").style.display = view === "login" ? "block" : "none";
+    $("agentsView").style.display = view === "agents" ? "block" : "none";
+    $("logout").style.display = view === "agents" ? "inline-block" : "none";
+  }
+
+  async function login() {
+    $("err").textContent = "";
+    try {
+      const res = await fetch("/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: $("password").value }),
+      });
+      if (!res.ok) { $("err").textContent = "Wrong password."; return; }
+      const data = await res.json();
+      token = data.token;
+      localStorage.setItem("rc_token", token);
+      startAgents();
+    } catch (e) {
+      $("err").textContent = "Could not reach server.";
+    }
+  }
+
+  function fmtUptime(s) {
+    if (s < 60) return s + "s";
+    if (s < 3600) return Math.floor(s / 60) + "m";
+    return Math.floor(s / 3600) + "h " + Math.floor((s % 3600) / 60) + "m";
+  }
+
+  async function refresh() {
+    const res = await fetch("/api/agents?token=" + encodeURIComponent(token));
+    if (res.status === 401) {  // token expired/invalid
+      localStorage.removeItem("rc_token"); token = ""; show("login"); return;
+    }
+    const agents = await res.json();
+    const rows = $("agentRows");
+    rows.innerHTML = "";
+    $("emptyMsg").style.display = agents.length ? "none" : "block";
+    for (const a of agents) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td><code>${a.id}</code></td>
+        <td>${a.viewers}</td>
+        <td>${fmtUptime(a.uptime)}</td>
+        <td class="row-actions"><button data-id="${a.id}">View / control</button></td>`;
+      tr.querySelector("button").onclick = () => {
+        location.href = "/viewer?agent=" + encodeURIComponent(a.id);
+      };
+      rows.appendChild(tr);
+    }
+  }
+
+  let timer = null;
+  function startAgents() {
+    show("agents");
+    refresh();
+    clearInterval(timer);
+    timer = setInterval(refresh, 2000);
+  }
+
+  $("loginBtn").onclick = login;
+  $("password").addEventListener("keydown", (e) => { if (e.key === "Enter") login(); });
+  $("logout").onclick = () => {
+    localStorage.removeItem("rc_token"); token = ""; clearInterval(timer); show("login");
+  };
+
+  // Boot: if we already have a token, try the agent list; else show login.
+  if (token) startAgents(); else show("login");
+</script>
+</body>
+</html>

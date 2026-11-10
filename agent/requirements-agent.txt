@@ -1,0 +1,6 @@
+# Dependencies for the AGENT only (the host machine, e.g. Windows).
+# The server packages (fastapi/uvicorn) are NOT needed here.
+websockets==13.1
+mss==9.0.2
+Pillow==11.0.0
+pynput==1.8.2

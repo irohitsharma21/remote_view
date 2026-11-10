@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>remote_control — viewer</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; font-family: system-ui, -apple-system, sans-serif; background: #0e0e12; color: #e8e8ea; }
+  header {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 16px; background: #16161c; border-bottom: 1px solid #26262e;
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  a.back { color: #8a8a94; text-decoration: none; font-size: 13px; }
+  #status {
+    margin-left: auto; font-size: 13px; padding: 4px 10px;
+    border-radius: 999px; background: #2a2a33;
+  }
+  #status.live { background: #b00020; }
+  .ctl { font-size: 13px; display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
+  #stage {
+    display: flex; align-items: center; justify-content: center;
+    height: calc(100vh - 54px); padding: 12px; box-sizing: border-box;
+  }
+  #screen { max-width: 100%; max-height: 100%; border-radius: 8px; box-shadow: 0 8px 40px rgba(0,0,0,.5); background: #000; }
+  #screen.controlling { cursor: crosshair; outline: 2px solid #b00020; }
+  .gate { max-width: 420px; margin: 60px auto; background: #16161c; border: 1px solid #26262e; border-radius: 10px; padding: 24px; }
+  input, button { font: inherit; padding: 9px 12px; border-radius: 8px; border: 1px solid #333; background: #0e0e12; color: #e8e8ea; }
+  button { background: #3355ff; border-color: #3355ff; cursor: pointer; }
+  #gateErr { color: #ff6b6b; font-size: 13px; min-height: 18px; }
+  .muted { color: #8a8a94; font-size: 13px; }
+</style>
+</head>
+<body>
+  <header>
+    <a class="back" href="/">← dashboard</a>
+    <h1 id="title">viewer</h1>
+    <label class="ctl" id="ctlWrap" style="display:none">
+      <input type="checkbox" id="control" /> send my input (control)
+    </label>
+    <span id="status">—</span>
+  </header>
+
+  <!-- Access-code gate -->
+  <div id="gate" class="gate">
+    <h2 style="margin-top:0">Access code</h2>
+    <p class="muted">Enter the 6-digit code shown on <code id="gateAgent"></code>'s banner.</p>
+    <div style="display:flex; gap:8px">
+      <input id="code" inputmode="numeric" placeholder="6-digit code" style="flex:1" />
+      <button id="connectBtn">Connect</button>
+    </div>
+    <p id="gateErr"></p>
+  </div>
+
+  <!-- Stream -->
+  <div id="stage" style="display:none">
+    <img id="screen" alt="remote screen" draggable="false" />
+  </div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const params = new URLSearchParams(location.search);
+  const agentId = params.get("agent") || "";
+  const token = localStorage.getItem("rc_token") || "";
+
+  if (!agentId) { location.href = "/"; }
+  if (!token) { location.href = "/"; }
+  $("title").textContent = "viewer · " + agentId;
+  $("gateAgent").textContent = agentId;
+
+  const statusEl = $("status"), screenEl = $("screen"), controlEl = $("control");
+  let ws = null, lastUrl = null;
+
+  // ---------- input forwarding ----------
+  const BUTTONS = { 0: "left", 1: "middle", 2: "right" };
+  const controlOn = () => controlEl.checked;
+  const send = (o) => { if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(o)); };
+  function norm(e) {
+    const r = screenEl.getBoundingClientRect();
+    return {
+      x: Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)),
+      y: Math.min(1, Math.max(0, (e.clientY - r.top) / r.height)),
+    };
+  }
+  controlEl.addEventListener("change", () => screenEl.classList.toggle("controlling", controlOn()));
+
+  let lastMove = 0;
+  screenEl.addEventListener("mousemove", (e) => {
+    if (!controlOn()) return;
+    const now = performance.now(); if (now - lastMove < 16) return; lastMove = now;
+    const p = norm(e); send({ t: "move", x: p.x, y: p.y });
+  });
+  screenEl.addEventListener("mousedown", (e) => {
+    if (!controlOn()) return; e.preventDefault();
+    const p = norm(e); send({ t: "down", x: p.x, y: p.y, button: BUTTONS[e.button] || "left" });
+  });
+  screenEl.addEventListener("mouseup", (e) => {
+    if (!controlOn()) return; e.preventDefault();
+    const p = norm(e); send({ t: "up", x: p.x, y: p.y, button: BUTTONS[e.button] || "left" });
+  });
+  screenEl.addEventListener("contextmenu", (e) => { if (controlOn()) e.preventDefault(); });
+  screenEl.addEventListener("wheel", (e) => {
+    if (!controlOn()) return; e.preventDefault();
+    send({ t: "scroll", dx: -Math.sign(e.deltaX), dy: -Math.sign(e.deltaY) });
+  }, { passive: false });
+  window.addEventListener("keydown", (e) => { if (!controlOn()) return; e.preventDefault(); send({ t: "key", key: e.key, pressed: true }); });
+  window.addEventListener("keyup", (e) => { if (!controlOn()) return; e.preventDefault(); send({ t: "key", key: e.key, pressed: false }); });
+
+  // ---------- connect ----------
+  function connect(code) {
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    const url = `${proto}://${location.host}/ws/viewer/${encodeURIComponent(agentId)}`
+              + `?token=${encodeURIComponent(token)}&code=${encodeURIComponent(code)}`;
+    ws = new WebSocket(url);
+    ws.binaryType = "blob";
+
+    ws.onopen = () => {
+      $("gate").style.display = "none";
+      $("stage").style.display = "flex";
+      $("ctlWrap").style.display = "flex";
+      statusEl.textContent = "waiting for frames…";
+    };
+    ws.onmessage = (ev) => {
+      statusEl.textContent = "🔴 live"; statusEl.classList.add("live");
+      const u = URL.createObjectURL(ev.data);
+      screenEl.src = u;
+      if (lastUrl) URL.revokeObjectURL(lastUrl);
+      lastUrl = u;
+    };
+    ws.onclose = (ev) => {
+      statusEl.classList.remove("live");
+      if (ev.code === 1008) {         // bad token or wrong code
+        showGate("Wrong access code (or session expired).");
+      } else if (ev.code === 1011) {  // agent not connected
+        showGate("That machine is not connected.");
+      } else if ($("stage").style.display !== "none") {
+        statusEl.textContent = "disconnected — reconnecting";
+        setTimeout(() => connect(code), 2000);
+      }
+    };
+    ws.onerror = () => ws.close();
+  }
+
+  function showGate(msg) {
+    $("stage").style.display = "none";
+    $("ctlWrap").style.display = "none";
+    $("gate").style.display = "block";
+    $("gateErr").textContent = msg || "";
+    statusEl.textContent = "—";
+  }
+
+  $("connectBtn").onclick = () => {
+    const code = $("code").value.trim();
+    if (!code) { $("gateErr").textContent = "Enter the code."; return; }
+    $("gateErr").textContent = "";
+    connect(code);
+  };
+  $("code").addEventListener("keydown", (e) => { if (e.key === "Enter") $("connectBtn").click(); });
+</script>
+</body>
+</html>
